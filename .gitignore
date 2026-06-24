@@ -1,0 +1,16 @@
+# runtime artifacts
+pipeline.db
+pipeline.db-wal
+pipeline.db-shm
+.burst_logs*/
+
+# local env (use .env.example as the template)
+.env
+
+# python
+__pycache__/
+*.pyc
+
+# personal prep — not part of the deliverable
+DEMO.md
+INTERVIEW_PREP.md

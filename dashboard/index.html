@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Order Pipeline — Ops Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; font-size: 14px; }
+
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 20px; background: #1e293b; border-bottom: 1px solid #334155;
+  position: sticky; top: 0; z-index: 10;
+}
+header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.02em; }
+.ws-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #94a3b8; }
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot.ok  { background: #22c55e; }
+.dot.err { background: #ef4444; }
+
+.page { padding: 14px; display: grid; gap: 12px; }
+
+/* ── Stat strip ── */
+.stats-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.stat { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 14px; }
+.stat-n { font-size: 28px; font-weight: 700; line-height: 1; }
+.stat-label { font-size: 11px; color: #64748b; margin-top: 5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.green { color: #22c55e; } .amber { color: #f59e0b; } .red { color: #ef4444; }
+/* Backpressure pair — flagged so ops reads in-flight + backlog together */
+.stat.bp { border-color: #f59e0b44; position: relative; }
+.stat.bp::after { content: "BACKPRESSURE"; position: absolute; top: 6px; right: 10px;
+  font-size: 8px; font-weight: 700; letter-spacing: 0.08em; color: #f59e0b88; }
+
+/* ── Main grid ── */
+.main-grid { display: grid; grid-template-columns: 260px 1fr 230px; gap: 12px; }
+
+/* Cards */
+.card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 14px; }
+.card-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 12px; }
+
+/* ── Funnel ── */
+.f-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.f-name { width: 108px; font-size: 12px; color: #94a3b8; }
+.f-track { flex: 1; height: 7px; background: #334155; border-radius: 4px; overflow: hidden; }
+.f-bar { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+.f-n { width: 30px; text-align: right; font-size: 12px; font-weight: 600; }
+
+/* ── Throughput chart ── */
+.chart-wrap { position: relative; height: 190px; }
+
+/* ── Right column ── */
+.right-col { display: flex; flex-direction: column; gap: 12px; }
+
+/* Downstream health */
+.ds-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.ds-name { font-weight: 500; }
+.badge { padding: 2px 9px; border-radius: 99px; font-size: 11px; font-weight: 700; }
+.badge-normal   { background: #052e16; color: #4ade80; }
+.badge-slow     { background: #431407; color: #fdba74; }
+.badge-down     { background: #450a0a; color: #f87171; }
+.badge-unknown  { background: #1e293b; color: #64748b; border: 1px solid #334155; }
+.badge-closed     { background: #052e16; color: #4ade80; }
+.badge-half_open  { background: #431407; color: #fdba74; }
+.badge-open       { background: #450a0a; color: #f87171; }
+
+/* ── Zones + Dead letters ── */
+.zones-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.zones-list { display: flex; flex-direction: column; gap: 8px; }
+.zone-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; padding: 6px 0; border-bottom: 1px solid #1e293b; }
+.zone-name { font-weight: 600; text-transform: capitalize; width: 70px; }
+.zone-counts { color: #94a3b8; flex: 1; }
+.dlq-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+.dlq-row { font-size: 11px; padding: 6px 0; border-bottom: 1px solid #1e293b; }
+.dlq-row .mono { color: #94a3b8; }
+.dlq-row .poison { color: #f87171; font-weight: 700; }
+
+/* ── Reconciliation banner (big + obvious) ── */
+.recon-banner { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.recon-card {
+  border-radius: 10px; padding: 16px 20px; border: 1px solid #334155;
+  display: flex; align-items: center; gap: 16px; transition: background 0.3s, border-color 0.3s;
+}
+.recon-card.pass { background: #052e16; border-color: #166534; }
+.recon-card.fail { background: #450a0a; border-color: #991b1b; animation: pulse 1s infinite; }
+@keyframes pulse { 50% { border-color: #ef4444; } }
+.recon-icon { font-size: 34px; line-height: 1; }
+.recon-card.pass .recon-icon { color: #22c55e; }
+.recon-card.fail .recon-icon { color: #ef4444; }
+.recon-body { flex: 1; }
+.recon-title { font-size: 16px; font-weight: 800; letter-spacing: 0.02em; }
+.recon-card.pass .recon-title { color: #86efac; }
+.recon-card.fail .recon-title { color: #fca5a5; }
+.recon-eq { font-family: ui-monospace, monospace; font-size: 13px; color: #cbd5e1; margin-top: 4px; }
+
+/* ── Worker pool ── */
+.wk-list { display: flex; flex-direction: column; gap: 6px; }
+.wk-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+.wk-id { display: flex; align-items: center; gap: 7px; }
+.wk-dot { width: 8px; height: 8px; border-radius: 50%; }
+.wk-dot.alive { background: #22c55e; }
+.wk-dot.dead  { background: #ef4444; }
+.wk-up { color: #64748b; font-size: 11px; }
+
+/* ── Load profile banner ── */
+.profile-banner {
+  display: none; align-items: center; gap: 12px; padding: 10px 16px;
+  background: #1e293b; border: 1px solid #f59e0b; border-radius: 8px;
+}
+.profile-banner.on { display: flex; }
+.profile-dot { width: 9px; height: 9px; border-radius: 50%; background: #f59e0b;
+  animation: pulse-amber 1.2s infinite; flex-shrink: 0; }
+@keyframes pulse-amber { 50% { opacity: 0.35; } }
+.profile-label { font-weight: 700; color: #fcd34d; }
+.profile-progress { color: #94a3b8; font-size: 12px; }
+
+/* ── Controls ── */
+.load-status { font-size: 12px; color: #f59e0b; margin-left: 4px; }
+.controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sep { width: 1px; background: #334155; height: 24px; margin: 0 2px; }
+.btn { padding: 5px 12px; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+.btn:hover { opacity: 0.85; }
+.btn-blue   { background: #1e3a5f; color: #93c5fd; }
+.btn-amber  { background: #78350f; color: #fcd34d; }
+.btn-red    { background: #7f1d1d; color: #fca5a5; }
+.btn-green  { background: #14532d; color: #86efac; }
+
+/* ── Orders table ── */
+table { width: 100%; border-collapse: collapse; }
+thead th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b;
+           padding: 6px 8px; border-bottom: 1px solid #334155; text-align: left; }
+tbody td { padding: 6px 8px; border-bottom: 1px solid #1e293b; font-size: 12px; }
+tbody tr:hover { background: #0f172a; cursor: pointer; }
+.pill { padding: 1px 7px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+.mono { font-family: monospace; font-size: 11px; }
+
+/* ── Timeline modal ── */
+#overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 50; align-items: center; justify-content: center; }
+#overlay.open { display: flex; }
+#modal { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 22px; width: min(480px, 92vw); max-height: 80vh; overflow-y: auto; }
+.modal-hd { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.tl-item { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px solid #334155; }
+.tl-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.tl-to { font-weight: 600; }
+.tl-from { color: #64748b; font-size: 12px; }
+.tl-time { font-size: 11px; color: #64748b; margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Order Pipeline &mdash; Ops Dashboard</h1>
+  <div class="ws-row">
+    <span class="dot err" id="dot"></span>
+    <span id="ws-lbl">connecting…</span>
+  </div>
+</header>
+
+<div class="page">
+
+  <!-- Reconciliation banner — the proof: nothing lost, nothing doubled -->
+  <div class="recon-banner">
+    <div class="recon-card" id="recon1">
+      <span class="recon-icon" id="recon1-ic">—</span>
+      <div class="recon-body">
+        <div class="recon-title" id="recon1-title">NO ORDERS LOST</div>
+        <div class="recon-eq" id="recon1-eq">waiting for data…</div>
+      </div>
+    </div>
+    <div class="recon-card" id="recon2">
+      <span class="recon-icon" id="recon2-ic">—</span>
+      <div class="recon-body">
+        <div class="recon-title" id="recon2-title">NO DOUBLE PROCESSING</div>
+        <div class="recon-eq" id="recon2-eq">waiting for data…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Load profile status — clearly shows which scripted profile is running -->
+  <div class="profile-banner" id="profile-banner">
+    <span class="profile-dot"></span>
+    <span class="profile-label" id="profile-label"></span>
+    <span class="profile-progress" id="profile-progress"></span>
+    <button class="btn btn-red" onclick="api('POST','/load/profile/stop',{})">■ Stop Profile</button>
+  </div>
+
+  <!-- Stat strip -->
+  <div class="stats-strip">
+    <div class="stat bp"><div class="stat-n amber" id="v-inflight">0</div><div class="stat-label">In-Flight (claimed)</div></div>
+    <div class="stat bp"><div class="stat-n"       id="v-backlog">0</div> <div class="stat-label">Due Backlog</div></div>
+    <div class="stat"><div class="stat-n red"   id="v-dlq">0</div>    <div class="stat-label">DLQ</div></div>
+    <div class="stat"><div class="stat-n amber" id="v-retries">0</div><div class="stat-label">Retries</div></div>
+    <div class="stat"><div class="stat-n green" id="v-dispatch">0</div><div class="stat-label">Dispatched</div></div>
+  </div>
+
+  <!-- Main grid -->
+  <div class="main-grid">
+
+    <!-- Funnel -->
+    <div class="card">
+      <div class="card-title">Order Funnel</div>
+      <div id="funnel"></div>
+    </div>
+
+    <!-- Throughput chart -->
+    <div class="card">
+      <div class="card-title">Throughput &mdash; deliveries per 5 s</div>
+      <div class="chart-wrap"><canvas id="tpchart"></canvas></div>
+    </div>
+
+    <!-- Right column: downstream + reconciliation -->
+    <div class="right-col">
+      <div class="card">
+        <div class="card-title">Downstream Health</div>
+        <div class="ds-row">
+          <span class="ds-name">Restaurant</span>
+          <span><span class="badge badge-unknown" id="ds-restaurant">…</span> <span class="badge badge-unknown" id="cb-restaurant">…</span></span>
+        </div>
+        <div class="ds-row" style="margin-bottom:0">
+          <span class="ds-name">Courier</span>
+          <span><span class="badge badge-unknown" id="ds-courier">…</span> <span class="badge badge-unknown" id="cb-courier">…</span></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Latency (placed &rarr; delivered)</div>
+        <div class="ds-row"><span class="ds-name">p50</span><span id="lat-p50" class="mono">—</span></div>
+        <div class="ds-row"><span class="ds-name">p95</span><span id="lat-p95" class="mono">—</span></div>
+        <div class="ds-row" style="margin-bottom:0"><span class="ds-name">SLA breaches</span><span id="lat-sla" class="mono red">—</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Worker Pool <span id="wk-count" style="color:#22c55e">—</span></div>
+        <div id="wk-list" class="wk-list"></div>
+      </div>
+
+    </div>
+  </div><!-- /main-grid -->
+
+  <!-- Zones + Dead letters -->
+  <div class="zones-grid">
+    <div class="card">
+      <div class="card-title">Delivery Zones</div>
+      <div id="zones-list" class="zones-list"></div>
+      <div class="controls" style="margin-top:10px">
+        <button class="btn btn-red" onclick="zoneOutage()">↓ Outage: one random zone's courier</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Dead Letters <span id="dlq-count" style="color:#ef4444"></span></div>
+      <div id="dlq-list" class="dlq-list"></div>
+    </div>
+  </div>
+
+  <!-- Load profiles -->
+  <div class="card">
+    <div class="card-title">Load Profiles</div>
+    <div class="controls">
+      <button class="btn btn-amber" onclick="api('POST','/load/profile',{name:'lunch_rush'})">🍔 Lunch Rush</button>
+      <button class="btn btn-blue"  onclick="api('POST','/load/profile',{name:'steady_evening'})">🌆 Steady Evening</button>
+      <button class="btn btn-amber" onclick="api('POST','/load/profile',{name:'promo_spike'})">📢 Promo Spike (3x)</button>
+      <button class="btn btn-red"   onclick="api('POST','/load/profile',{name:'flash_outage'})">⚡ Flash Outage</button>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="card">
+    <div class="card-title">Controls</div>
+    <div class="controls">
+      <button class="btn btn-blue"  onclick="api('POST','/load/start',{rate:5,count:200})">▶ Load 5/s</button>
+      <button class="btn btn-amber" onclick="api('POST','/load/rush',{})">⚡ Dinner Rush</button>
+      <button class="btn btn-blue"  onclick="api('POST','/load/stop',{})">■ Stop Load</button>
+      <span id="load-status" class="load-status"></span>
+      <div class="sep"></div>
+      <button class="btn btn-red"   onclick="api('POST','/worker/kill',{n:1})">✖ Kill Worker</button>
+      <button class="btn btn-green" onclick="api('POST','/worker/start',{n:1})">+ Worker</button>
+      <div class="sep"></div>
+      <button class="btn btn-green" onclick="replayDlq(this)">↺ Replay DLQ</button>
+      <div class="sep"></div>
+      <button class="btn btn-amber" onclick="api('POST','/load/cancel-chaos',{percent:5,seconds:30})">🎲 Cancel 5%/30s</button>
+      <div class="sep"></div>
+      <button class="btn btn-red"   onclick="chaos('restaurant','down')">Restaurant ↓ Down</button>
+      <button class="btn btn-amber" onclick="chaos('restaurant','slow')">Restaurant ~ Slow</button>
+      <button class="btn btn-green" onclick="chaos('restaurant','normal')">Restaurant ✓</button>
+      <div class="sep"></div>
+      <button class="btn btn-red"   onclick="chaos('courier','down')">Courier ↓ Down</button>
+      <button class="btn btn-amber" onclick="chaos('courier','slow')">Courier ~ Slow</button>
+      <button class="btn btn-green" onclick="chaos('courier','normal')">Courier ✓</button>
+    </div>
+  </div>
+
+  <!-- Recent orders -->
+  <div class="card">
+    <div class="card-title">Recent Orders (last 20) &mdash; click any row for timeline</div>
+    <table>
+      <thead><tr>
+        <th>Order ID</th><th>Item</th><th>Zone</th><th>Status</th><th>Attempts</th><th>Updated</th>
+      </tr></thead>
+      <tbody id="orders-body"></tbody>
+    </table>
+  </div>
+
+</div><!-- /page -->
+
+<!-- Timeline modal -->
+<div id="overlay" onclick="if(event.target===this)closeModal()">
+  <div id="modal">
+    <div class="modal-hd">
+      <strong id="modal-title">Timeline</strong>
+      <button class="btn btn-blue" onclick="closeModal()">✕ Close</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+// ── Constants ────────────────────────────────────────────────────────────────
+const STATUSES = ['placed','confirmed','preparing','ready','out_for_delivery','delivered','cancelled','failed'];
+const COLORS = {
+  placed:'#6b7280', confirmed:'#3b82f6', preparing:'#f97316',
+  ready:'#eab308', out_for_delivery:'#8b5cf6', delivered:'#22c55e',
+  cancelled:'#94a3b8', failed:'#ef4444',
+};
+
+// ── Throughput chart ─────────────────────────────────────────────────────────
+const MAX_PTS = 60;
+const ds = { label:'deliveries/5s', data:[], borderColor:'#22c55e',
+             backgroundColor:'rgba(34,197,94,0.08)', fill:true, tension:0.4, pointRadius:0 };
+const chart = new Chart(document.getElementById('tpchart'), {
+  type:'line', data:{ labels:[], datasets:[ds] },
+  options:{
+    animation:false, responsive:true, maintainAspectRatio:false,
+    scales:{
+      x:{ display:false },
+      y:{ beginAtZero:true, grid:{ color:'#1e293b' }, ticks:{ color:'#64748b', stepSize:1 } }
+    },
+    plugins:{ legend:{ display:false } }
+  }
+});
+
+function pushTp(v) {
+  const t = new Date().toLocaleTimeString();
+  chart.data.labels.push(t);
+  ds.data.push(v);
+  if (ds.data.length > MAX_PTS) { chart.data.labels.shift(); ds.data.shift(); }
+  chart.update('none');
+}
+
+// ── Funnel ───────────────────────────────────────────────────────────────────
+function renderFunnel(funnel) {
+  const maxV = Math.max(...Object.values(funnel).map(Number), 1);
+  document.getElementById('funnel').innerHTML = STATUSES.map(s => {
+    const n = funnel[s] || 0;
+    const pct = Math.round(n / maxV * 100);
+    const c = COLORS[s];
+    return `<div class="f-row">
+      <span class="f-name">${s.replace('_',' ')}</span>
+      <div class="f-track"><div class="f-bar" style="width:${pct}%;background:${c}"></div></div>
+      <span class="f-n">${n}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── Recent orders ────────────────────────────────────────────────────────────
+function statusPill(s) {
+  const c = COLORS[s]||'#94a3b8';
+  return `<span class="pill" style="background:${c}22;color:${c}">${s.replace('_',' ')}</span>`;
+}
+
+function renderOrders(orders) {
+  document.getElementById('orders-body').innerHTML = orders.map(o => {
+    const t = new Date(o.updated_at*1000).toLocaleTimeString();
+    return `<tr onclick="showTimeline('${o.id}')">
+      <td class="mono">${o.id.slice(0,8)}&hellip;${o.poison?' <span class="poison" title="poison order">&#9763;</span>':''}</td>
+      <td>${o.item||'—'}</td>
+      <td style="color:#64748b">${o.zone||'—'}</td>
+      <td>${statusPill(o.status)}</td>
+      <td style="color:${o.attempt_count>0?'#f59e0b':'#64748b'}">${o.attempt_count||0}</td>
+      <td style="color:#64748b">${t}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Downstream health + circuit breakers ───────────────────────────────────
+function renderDownstream(ds) {
+  for (const [name, info] of Object.entries(ds)) {
+    const el = document.getElementById(`ds-${name}`);
+    if (!el) continue;
+    const mode = info.effective_mode || info.effective || 'unknown';
+    el.textContent = mode;
+    el.className = `badge badge-${['normal','slow','down'].includes(mode)?mode:'unknown'}`;
+  }
+}
+
+function renderCircuitBreakers(breakers) {
+  if (!breakers) return;
+  for (const [name, info] of Object.entries(breakers)) {
+    const el = document.getElementById(`cb-${name}`);
+    if (!el) continue;
+    el.textContent = `CB: ${info.state}`;
+    el.className = `badge badge-${['closed','open','half_open'].includes(info.state)?info.state:'unknown'}`;
+  }
+}
+
+// ── Latency / SLA ────────────────────────────────────────────────────────────
+function renderLatency(l) {
+  if (!l) return;
+  document.getElementById('lat-p50').textContent = `${l.p50_s}s  (n=${l.sample_n})`;
+  document.getElementById('lat-p95').textContent = `${l.p95_s}s`;
+  const breaches = (l.sla_breaches_in_flight||0) + (l.sla_breaches_delivered_recent||0);
+  document.getElementById('lat-sla').textContent = `${breaches}  (>${l.sla_threshold_s}s)`;
+}
+
+// ── Zones ────────────────────────────────────────────────────────────────────
+function renderZones(zones) {
+  if (!zones) return;
+  document.getElementById('zones-list').innerHTML = Object.entries(zones).map(([name, z]) => {
+    const by = z.by_state || {};
+    const active = (by.placed||0)+(by.confirmed||0)+(by.preparing||0)+(by.ready||0)+(by.out_for_delivery||0);
+    const dlq = by.failed||0;
+    return `<div class="zone-row">
+      <span class="zone-name">${name}</span>
+      <span class="zone-counts">active ${active} &middot; delivered ${by.delivered||0} &middot; DLQ ${dlq}</span>
+      <span class="mono green">${z.throughput_5s||0}/5s</span>
+    </div>`;
+  }).join('');
+}
+
+// ── Dead letters ─────────────────────────────────────────────────────────────
+function renderDLQ(rows) {
+  if (!rows) return;
+  document.getElementById('dlq-count').textContent = rows.length ? `(${rows.length} recent)` : '';
+  document.getElementById('dlq-list').innerHTML = rows.length
+    ? rows.map(r => `<div class="dlq-row">
+        <span class="mono">${r.order_id.slice(0,8)}&hellip;</span>
+        ${r.poison ? '<span class="poison">POISON</span>' : ''}
+        <span style="color:#64748b">[${r.zone||'—'}] stuck at ${r.last_status}</span>
+        <div style="color:#94a3b8">${r.reason||''}</div>
+      </div>`).join('')
+    : '<div style="color:#64748b;font-size:12px">no dead letters</div>';
+}
+
+async function zoneOutage() {
+  const zones = ['north','south','east','west'];
+  const z = zones[Math.floor(Math.random()*zones.length)];
+  await api('POST', '/chaos/courier', {mode:'down', seconds:30, zone:z});
+  alert(`courier outage started for zone: ${z} (30s)`);
+}
+
+// ── Worker pool ──────────────────────────────────────────────────────────────
+function renderWorkers(w) {
+  if (!w) return;
+  const el = document.getElementById('wk-count');
+  el.textContent = `${w.alive}/${w.total} alive`;
+  el.style.color = w.alive === 0 ? '#ef4444' : (w.alive < w.total ? '#f59e0b' : '#22c55e');
+  document.getElementById('wk-list').innerHTML = (w.workers||[]).map(k => `
+    <div class="wk-row">
+      <span class="wk-id"><span class="wk-dot ${k.alive?'alive':'dead'}"></span>${k.id}</span>
+      <span class="wk-up">${k.alive ? k.uptime+'s' : 'killed'}</span>
+    </div>`).join('');
+}
+
+// ── Load status ──────────────────────────────────────────────────────────────
+function renderLoad(l) {
+  const el = document.getElementById('load-status');
+  if (l && l.running) el.textContent = `submitting ${l.submitted}/${l.target} @ ${l.rate}/s`;
+  else if (l && l.submitted && l.submitted >= l.target && l.target) el.textContent = `done — ${l.submitted} submitted`;
+  else el.textContent = '';
+}
+
+function renderProfile(p) {
+  const banner = document.getElementById('profile-banner');
+  if (!p || !p.running) { banner.classList.remove('on'); return; }
+  banner.classList.add('on');
+  document.getElementById('profile-label').textContent = `Running: ${p.label}`;
+  document.getElementById('profile-progress').textContent = `${p.elapsed}s / ${p.total_seconds}s`;
+}
+
+// ── Reconciliation ───────────────────────────────────────────────────────────
+function setRecon(card, ok, eq) {
+  document.getElementById(card).className = `recon-card ${ok?'pass':'fail'}`;
+  document.getElementById(`${card}-ic`).textContent = ok ? '✓' : '✗';
+  document.getElementById(`${card}-eq`).textContent = eq;
+}
+
+function renderRecon(snap) {
+  const f = snap.funnel||{};
+  const delivered = f.delivered||0, failed = f.failed||0, cancelled = f.cancelled||0;
+  const inflight  = snap.in_flight||0;
+  const waiting   = snap.waiting||0;
+  const submitted = snap.submitted||0;
+  const dispatch  = snap.dispatch_count||0;
+
+  // Invariant 1 — nothing lost: every submitted order is accounted for in
+  // exactly one bucket. submitted (independent counter) == the live partition.
+  const accounted = delivered + cancelled + failed + inflight + waiting;
+  const inv1ok = (submitted === accounted);
+  let eq1 = `${submitted} submitted  =  ${delivered} delivered + ${inflight} in-flight + ${waiting} waiting + ${failed} DLQ`;
+  if (cancelled) eq1 += ` + ${cancelled} cancelled`;
+  if (!inv1ok) eq1 += `   (accounted ${accounted})`;
+  setRecon('recon1', inv1ok, eq1);
+
+  // Invariant 2 — nothing doubled: courier dispatched exactly once per delivery.
+  const inv2ok = (dispatch === delivered);
+  setRecon('recon2', inv2ok, `${dispatch} courier dispatches  =  ${delivered} delivered`);
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+let ws;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => {
+    document.getElementById('dot').className = 'dot ok';
+    document.getElementById('ws-lbl').textContent = 'connected';
+  };
+  ws.onclose = () => {
+    document.getElementById('dot').className = 'dot err';
+    document.getElementById('ws-lbl').textContent = 'reconnecting…';
+    setTimeout(connect, 2000);
+  };
+  ws.onmessage = ({data}) => {
+    const s = JSON.parse(data);
+    document.getElementById('v-inflight').textContent = s.in_flight||0;
+    document.getElementById('v-backlog').textContent  = s.due_backlog||0;
+    document.getElementById('v-dlq').textContent      = s.dlq_size||0;
+    document.getElementById('v-retries').textContent  = s.total_retries||0;
+    document.getElementById('v-dispatch').textContent = s.dispatch_count||0;
+    renderFunnel(s.funnel||{});
+    renderOrders(s.recent_orders||[]);
+    renderDownstream(s.downstreams||{});
+    renderWorkers(s.workers);
+    renderLoad(s.load);
+    renderProfile(s.load_profile);
+    renderCircuitBreakers(s.circuit_breakers);
+    renderLatency(s.latency);
+    renderZones(s.zones);
+    renderDLQ(s.recent_dlq);
+    renderRecon(s);
+    pushTp(s.throughput||0);
+  };
+}
+connect();
+
+// ── Controls ─────────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  await fetch(path, { method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+}
+async function chaos(svc, mode) {
+  await api('POST', `/chaos/${svc}`, {mode, seconds:300});
+}
+async function replayDlq(btn) {
+  const r = await fetch('/dlq/replay', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+  const d = await r.json();
+  const orig = btn.textContent;
+  btn.textContent = `↺ replayed ${d.replayed}`;
+  setTimeout(() => { btn.textContent = orig; }, 2000);
+}
+
+// ── Timeline modal ───────────────────────────────────────────────────────────
+async function showTimeline(id) {
+  const r = await fetch(`/orders/${id}`);
+  const data = await r.json();
+  document.getElementById('modal-title').textContent = `Timeline — ${id.slice(0,8)}…`;
+  const events = data.events||[];
+  document.getElementById('modal-body').innerHTML = events.map(e => {
+    const ts = new Date(e.at*1000).toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:2});
+    const c = COLORS[e.to_status]||'#94a3b8';
+    return `<div class="tl-item">
+      <div class="tl-dot" style="background:${c}"></div>
+      <div>
+        <span class="tl-to" style="color:${c}">${e.to_status.replace('_',' ')}</span>
+        <span class="tl-from"> ← ${e.from_status||'start'}</span>
+        <div class="tl-time">${ts} &nbsp; ${e.reason||''}</div>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('overlay').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('overlay').classList.remove('open');
+}
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeModal(); });
+</script>
+</body>
+</html>
