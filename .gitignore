@@ -2,7 +2,7 @@
 pipeline.db
 pipeline.db-wal
 pipeline.db-shm
-.burst_logs*/
+burst_logs_*/
 
 # local env (use .env.example as the template)
 .env
@@ -10,7 +10,3 @@ pipeline.db-shm
 # python
 __pycache__/
 *.pyc
-
-# personal prep — not part of the deliverable
-DEMO.md
-INTERVIEW_PREP.md
